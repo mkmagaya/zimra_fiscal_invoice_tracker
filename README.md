@@ -86,6 +86,26 @@ Your document **must contain a column named**:
 - Requests
 - BeautifulSoup4
 
+## Technical Description
+
+This application is a Python-based Streamlit web tool designed to validate ZIMRA FDMS invoices by scraping the official invoice verification portal.
+
+The system uses **Pandas** to ingest Excel files of arbitrary structure and dynamically detect required columns, ensuring compatibility with multiple document formats. Only critical fields—primarily the invoice verification URL—are required for processing, while additional columns are ignored.
+
+For each invoice, the application performs an HTTP GET request using the **Requests** library and parses the returned HTML response with **BeautifulSoup**. Invoice status is determined by inspecting the page’s semantic elements, specifically the `header-text` node, which indicates whether an invoice is valid or invalid.
+
+When an invoice is invalid, the scraper extracts:
+- The invoice number
+- Validation error messages listed under the “Validation errors” section
+
+For valid invoices, the system records a positive verification status without error details.
+
+The application processes records sequentially to respect server limits and displays real-time progress using Streamlit’s progress indicators. All exceptions—including network timeouts, malformed URLs, and unexpected page structures—are handled gracefully to prevent single-record failures from interrupting batch execution.
+
+Verification results are aggregated into a structured Pandas DataFrame and presented to the user via an interactive table, along with summary statistics for audit and reconciliation purposes.
+
+This architecture prioritizes robustness, data integrity, and adaptability to changing input formats while maintaining a clear separation between data ingestion, scraping logic, and presentation layers.
+
 ---
 
 ## Disclaimer
