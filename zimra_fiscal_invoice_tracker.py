@@ -2,115 +2,224 @@ import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
-from urllib3.exceptions import ConnectTimeoutError
 import time
 
+
+# ---------------------------------------------------
 # Function to scrape data from a single URL
+# ---------------------------------------------------
 def scrape_data(url):
     try:
-        # Send HTTP request
-        response = requests.get(url, timeout=10)  # Set timeout for the request
-        
-        # Check if the request was successful
-        if response.status_code == 200:
-            # Parse HTML content
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Extract specific fields
-            header_text = soup.find('div', class_='header-text').text.strip()
-            
-            if "Invoice is valid" in header_text:
-                return None, None  # Return None for both invoice and comment
+        if not isinstance(url, str) or not url.strip():
+            return None, None, None
+
+        url = url.strip()
+
+        if url.lower() == "verification url":
+            return None, None, None
+
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        response = requests.get(url, timeout=10)
+
+        if response.status_code != 200:
+            return "ERROR", None, f"HTTP {response.status_code}"
+
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        # -------------------------------
+        # Determine status
+        # -------------------------------
+        header_div = soup.find("div", class_="header-text")
+        if not header_div:
+            return "ERROR", None, "Missing status header"
+
+        header_text = header_div.text.strip().lower()
+
+        status = "VALID" if "invoice is valid" in header_text else "INVALID"
+
+        # -------------------------------
+        # Invoice Number (exists for both)
+        # -------------------------------
+        invoice_number = None
+        labels = soup.find_all("label")
+
+        for label in labels:
+            if label.text.strip() == "INVOICE NUMBER":
+                invoice_number = label.find_next("div", class_="result-text").text.strip()
+                break
+
+        # -------------------------------
+        # Validation errors (INVALID only)
+        # -------------------------------
+        comment = None
+        if status == "INVALID":
+            errors_block = soup.find("div", class_="val-errors-block")
+            if errors_block:
+                errors = [e.text.strip() for e in errors_block.find_all("div", class_="col")]
+                comment = "; ".join(errors)
             else:
-                invoice_number = soup.find('div', class_='invoice-number-box').find('div', class_='result-text-2').text.strip()
-                comment = soup.find('div', class_='mb-2').text.strip()
-                return invoice_number, comment
-        else:
-            st.warning(f"Failed to fetch data from {url}. Status code: {response.status_code}")
-            return None, None
-    except ConnectTimeoutError:
-        st.error(f"Connection to {url} timed out. Please check your internet connection and try again.")
-        return None, None
+                comment = "Invoice is not valid"
+
+        return status, invoice_number, comment
+
+    except requests.exceptions.Timeout:
+        return "ERROR", None, "Connection timed out"
     except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-        return None, None
+        return "ERROR", None, str(e)
 
-# Streamlit app
+
+# ---------------------------------------------------
+# Streamlit App
+# ---------------------------------------------------
 def streamlit_app():
-    st.title("Zimra Invoice Verifier")
-    timeout_error_shown = False
-    last_timeout_timestamp = 0
-    
-    option = st.radio("Select Input Option:", ["Upload Excel File", "Insert Single Link"])
-    
-    if option == "Upload Excel File":
-        # Upload Excel file
-        uploaded_file = st.file_uploader("Upload Excel file")
-        
-        if uploaded_file is not None:
-            try:
-                # Read data from Excel file into DataFrame without headers
-                df = pd.read_excel(uploaded_file, header=None)
-                
-                # Assign default header row headings
-                headers = [
-                    "Document Type", "Document No.", "Date Time", "Fiscal Day No.", "Fiscal Day Status", 
-                    "Fiscal Day Sysnchronised", "Global Receipt No.", "Receipt Counter", "Currency Code", 
-                    "Document Amount", "User ID", "FDMS Status", "Verification Url", "FDMS Receipt ID", 
-                    "FDMS Server Date", "FDMS Operation ID"
-                ]
-                df.columns = headers
-                
-                invalid_invoices = []
-                comments = []
-                
-                # Iterate over rows and scrape data from Verification Url column
-                for index, row in df.iterrows():
-                    verification_url = row["Verification Url"]  # Assuming the column name is "Verification Url"
-                    invoice_number, comment = scrape_data(verification_url)
-                    if invoice_number is not None:
-                        invalid_invoices.append(invoice_number)
-                        comments.append(comment)
-                
-                # Display invalid invoices with corresponding comments in a table
-                st.subheader("Invalid Invoices:")
-                data = {"Invoice Number": invalid_invoices, "Comment": comments}
-                invalid_df = pd.DataFrame(data)
-                st.table(invalid_df)
-            except Exception as e:
-                st.error(f"An error occurred while processing the file: {str(e)}")
-                if isinstance(e, ConnectTimeoutError) and not timeout_error_shown:
-                    st.error(f"Connection timeout error. Please check your internet connection and try again.")
-                    timeout_error_shown = True
-    
-    elif option == "Insert Single Link":
-        # Insert single link
-        url = st.text_input("Enter URL:")
-        
-        if st.button("Verify"):
-            try:
-                if url:
-                    invoice_number, comment = scrape_data(url)
-                    if invoice_number is not None:
-                        # Display result in a table
-                        data = {"Invoice Number": [invoice_number], "Comment": [comment]}
-                        result_df = pd.DataFrame(data)
-                        st.table(result_df)
-                    else:
-                        st.info("Invoice is valid.")
-            except ConnectTimeoutError:
-                if not timeout_error_shown:
-                    st.error(f"Connection to {url} timed out. Please check your internet connection and try again.")
-                    timeout_error_shown = True
-                    last_timeout_timestamp = time.time()
-                else:
-                    current_timestamp = time.time()
-                    # Wait for 5 seconds before allowing another attempt
-                    if current_timestamp - last_timeout_timestamp < 5:
-                        st.warning("Waiting for connection...")
-                        time.sleep(5 - (current_timestamp - last_timeout_timestamp))
-            except Exception as e:
-                st.error(f"An error occurred while processing the link: {str(e)}")
+    st.set_page_config(page_title="ZIMRA Invoice Verifier", layout="centered")
+    st.title("ZIMRA Invoice Verifier")
 
+    option = st.radio(
+        "Select Input Option:",
+        ["Upload Excel File", "Insert Single Link"]
+    )
+
+    # ---------------------------------------------------
+    # Upload Excel File
+    # ---------------------------------------------------
+    if option == "Upload Excel File":
+        uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
+
+    #     if uploaded_file:
+    #         try:
+    #             df = pd.read_excel(uploaded_file, header=None)
+
+    #             headers = [
+    #                 "Document Type", "Document No.", "Date Time", "Fiscal Day No.",
+    #                 "Fiscal Day Status", "Fiscal Day Synchronized", "Global Receipt No.",
+    #                 "Receipt Counter", "Currency Code", "Creation Date", "Document Amount", "User ID",
+    #                 "FDMS Status", "Verification Url", "FDMS Receipt ID",
+    #                 "FDMS Server Date", "Error Code", "FDMS Operation ID",
+    #             ]
+    #             df.columns = headers
+
+    #             results = []
+
+    #             total_rows = len(df)
+    #             progress_bar = st.progress(0)
+    #             status_text = st.empty()
+
+    #             for i, row in df.iterrows():
+    #                 verification_url = row["Verification Url"]
+
+    #                 status, invoice_number, comment = scrape_data(verification_url)
+
+    #                 if status:
+    #                     results.append({
+    #                         "Status": status,
+    #                         "Invoice Number": invoice_number,
+    #                         "Comment": comment
+    #                     })
+
+    #                 progress = int(((i + 1) / total_rows) * 100)
+    #                 progress_bar.progress(progress)
+    #                 status_text.text(f"Processing {i + 1} of {total_rows} invoices...")
+
+    #                 time.sleep(0.1)
+
+    #             progress_bar.empty()
+    #             status_text.empty()
+
+    #             results_df = pd.DataFrame(results)
+
+    #             st.subheader("Invoice Verification Results")
+    #             st.dataframe(results_df, use_container_width=True)
+
+    #             # Summary
+    #             st.markdown("### Summary")
+    #             st.write(results_df["Status"].value_counts())
+
+    #         except Exception as e:
+    #             st.error(f"Error processing file: {str(e)}")
+
+    # ---------------------------------------------------
+    # Flexible upload file handling
+    # ---------------------------------------------------
+        if uploaded_file:
+            try:
+                # Read Excel with automatic headers
+                df = pd.read_excel(uploaded_file)
+
+                # List of critical columns we require
+                critical_columns = ["Verification Url"]
+
+                # Check if critical columns exist
+                missing_columns = [col for col in critical_columns if col not in df.columns]
+                if missing_columns:
+                    st.error(f"Missing critical columns: {', '.join(missing_columns)}")
+                else:
+                    results = []
+
+                    total_rows = len(df)
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    for i, row in df.iterrows():
+                        verification_url = row["Verification Url"]
+
+                        status, invoice_number, comment = scrape_data(verification_url)
+
+                        if status:
+                            results.append({
+                                "Status": status,
+                                "Invoice Number": invoice_number,
+                                "Comment": comment
+                            })
+
+                        # Update progress
+                        progress = int(((i + 1) / total_rows) * 100)
+                        progress_bar.progress(progress)
+                        status_text.text(f"Processing {i + 1} of {total_rows} invoices...")
+
+                        time.sleep(0.1)
+
+                    progress_bar.empty()
+                    status_text.empty()
+
+                    results_df = pd.DataFrame(results)
+
+                    st.subheader("Invoice Verification Results")
+                    st.dataframe(results_df, use_container_width=True)
+
+                    # Summary
+                    st.markdown("### Summary")
+                    st.write(results_df["Status"].value_counts())
+
+            except Exception as e:
+                st.error(f"Error processing file: {str(e)}")
+
+    # ---------------------------------------------------
+    # Insert Single Link
+    # ---------------------------------------------------
+    else:
+        url = st.text_input("Enter Verification URL")
+
+        if st.button("Verify"):
+            with st.spinner("Verifying invoice..."):
+                status, invoice_number, comment = scrape_data(url)
+
+            if status == "VALID":
+                st.success("Invoice is valid ✅")
+            elif status == "INVALID":
+                st.error("Invoice is NOT valid ❌")
+                st.table(pd.DataFrame({
+                    "Invoice Number": [invoice_number],
+                    "Comment": [comment]
+                }))
+            else:
+                st.warning(comment)
+
+
+# ---------------------------------------------------
+# Run App
+# ---------------------------------------------------
 if __name__ == "__main__":
     streamlit_app()
